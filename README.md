@@ -238,6 +238,20 @@ ClaudeClient: POST /v1/messages → [Finding] sorted by severity
 
 ---
 
+## Roadmap
+
+### USB "Field Kit" Mode *(planned)*
+
+The goal is to make SpaceJamf a self-contained tool that a tech can carry on a USB drive, plug into any troublesome Mac, and run, with no installation or per-machine configuration required.
+
+**What this requires:**
+- **Apple Developer account + notarization** — macOS Gatekeeper will block an unsigned binary from an external drive. The binary needs to be signed with a Developer ID certificate and notarized via `notarytool`. Without this, techs hit a security prompt before the tool ever runs.
+- **APFS or HFS+ formatted USB** — macOS mounts FAT32/exFAT volumes with `noexec`, so the binary simply won't run. The USB must be formatted as APFS.
+- **Encrypted API key storage** — storing a plaintext API key on a USB that can be lost is a billing and security risk. The plan is a `spacejamf setup` command that encrypts the key using AES-256-GCM (via Swift's `CryptoKit`) with a passphrase only the tech knows. Setup writes ciphertext to the USB; every subsequent run prompts for the passphrase to decrypt in memory only — the plaintext key is never written to disk.
+- **Config path resolution** — `Config.swift` needs to check for a config file adjacent to the binary (on the USB) before falling back to `~/.spacejamf/config`.
+
+---
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).

@@ -19,7 +19,7 @@ struct DiagnoseCommand: AsyncParsableCommand {
         name: .long,
         help: "Output format: terminal (default) or html"
     )
-    var output: String = "terminal"
+    var outputFormat: String = "terminal"
 
     @Flag(
         name: .long,
@@ -39,6 +39,12 @@ struct DiagnoseCommand: AsyncParsableCommand {
     )
     var saveJSON: String?
 
+    @Option(
+        name: .long,
+        help: "Directory to write HTML reports into (default: current working directory)"
+    )
+    var outputDir: String = "."
+
     // MARK: - Run
 
     mutating func run() async throws {
@@ -48,8 +54,8 @@ struct DiagnoseCommand: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        guard output == "terminal" || output == "html" else {
-            err("Unknown output format '\(output)'. Valid values: terminal, html")
+        guard outputFormat == "terminal" || outputFormat == "html" else {
+            err("Unknown output format '\(outputFormat)'. Valid values: terminal, html")
             throw ExitCode.failure
         }
 
@@ -85,7 +91,25 @@ struct DiagnoseCommand: AsyncParsableCommand {
 
         // ── No-Claude mode ────────────────────────────────────────────────────
         if noClaude {
-            TerminalReporter.renderRaw(results: results)
+            if outputFormat == "html" {
+                // Produce an HTML report with no AI findings (NEW-10).
+                let rawReport = AnalysisReport(
+                    findings: [],
+                    summary: "Raw diagnostic output only — AI analysis not performed (--no-claude).",
+                    generatedAt: Date()
+                )
+                let filename = htmlFilename()
+                let html = HTMLReporter.render(report: rawReport, results: results)
+                do {
+                    try html.write(toFile: filename, atomically: true, encoding: .utf8)
+                    print("Report written to \(URL(fileURLWithPath: filename).absoluteURL.path)")
+                } catch {
+                    err("Failed to write HTML report: \(error)")
+                    throw ExitCode.failure
+                }
+            } else {
+                TerminalReporter.renderRaw(results: results)
+            }
             return
         }
 
@@ -112,7 +136,7 @@ struct DiagnoseCommand: AsyncParsableCommand {
             err("Claude analysis failed: \(error)")
             throw ExitCode.failure
         }
-        report.generatedAt = Date()
+        // Note: report.generatedAt is set inside ClaudeClient.analyze(); no re-assignment needed.
 
         // ── Optionally persist JSON ───────────────────────────────────────────
         if let savePath = saveJSON {
@@ -129,13 +153,13 @@ struct DiagnoseCommand: AsyncParsableCommand {
         }
 
         // ── Render ────────────────────────────────────────────────────────────
-        switch output {
+        switch outputFormat {
         case "html":
-            let filename = "spacejamf-report-\(String(UUID().uuidString.prefix(8)).lowercased()).html"
+            let filename = htmlFilename()
             let html = HTMLReporter.render(report: report, results: results)
             do {
                 try html.write(toFile: filename, atomically: true, encoding: .utf8)
-                print("HTML report saved to \(filename)")
+                print("Report written to \(URL(fileURLWithPath: filename).absoluteURL.path)")
             } catch {
                 err("Failed to write HTML report: \(error)")
                 throw ExitCode.failure
@@ -147,11 +171,24 @@ struct DiagnoseCommand: AsyncParsableCommand {
 
     // MARK: - Helpers
 
-    private func parseAreas() -> [DiagnosticArea] {
-        areas
+    func parseAreas() -> [DiagnosticArea] {
+        let tokens = areas
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+        // Warn about unrecognised tokens (L-8).
+        for token in tokens where DiagnosticArea(rawValue: token) == nil {
+            err("Warning: unknown area '\(token)' — skipped")
+        }
+        // Parse, then deduplicate while preserving order (NEW-11).
+        var seen = Set<DiagnosticArea>()
+        return tokens
             .compactMap { DiagnosticArea(rawValue: $0) }
+            .filter { seen.insert($0).inserted }
+    }
+
+    private func htmlFilename() -> String {
+        let name = "spacejamf-report-\(String(UUID().uuidString.prefix(8)).lowercased()).html"
+        return URL(fileURLWithPath: outputDir).appendingPathComponent(name).path
     }
 
     private func buildCollectors(

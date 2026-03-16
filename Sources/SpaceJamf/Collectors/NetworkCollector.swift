@@ -23,7 +23,7 @@ struct NetworkCollector: CollectorProtocol {
 
         // ── DNS: AD domain ────────────────────────────────────────────────────
         if let domain {
-            let hostResult = await Shell.run("/usr/bin/host", args: [domain])
+            let hostResult = await Shell.run("/usr/bin/host", args: [domain], timeout: 15)
             output += "=== DNS: host \(domain) ===\n\(hostResult.stdout)"
             if !hostResult.stderr.isEmpty { output += "[stderr]: \(hostResult.stderr)\n" }
             exitCodes["host-ad"] = hostResult.exitCode
@@ -33,20 +33,24 @@ struct NetworkCollector: CollectorProtocol {
 
         // ── JSS reachability ─────────────────────────────────────────────────
 
-        if let jss {
+        if let jss, isAllowedURL(jss) {
             let curlResult = await Shell.run(
                 "/usr/bin/curl",
                 args: [
                     "-s", "-o", "/dev/null",
                     "--connect-timeout", "10",
+                    "--max-time", "15",
                     "-w", "%{http_code}",
                     jss
-                ]
+                ],
+                timeout: 20 // hard kill if curl somehow ignores --max-time
             )
             output += "\n=== JSS Reachability: \(jss) ===\n"
             output += "HTTP status: \(curlResult.stdout)\n"
             if !curlResult.stderr.isEmpty { output += "[stderr]: \(curlResult.stderr)\n" }
             exitCodes["curl-jss"] = curlResult.exitCode
+        } else if let jss {
+            output += "\n=== JSS Reachability: \(jss) ===\nSkipped — URL scheme is not http/https.\n"
         } else {
             output += "\n=== JSS Reachability ===\nJSS URL not detected; reachability check skipped.\n"
         }
@@ -73,10 +77,18 @@ struct NetworkCollector: CollectorProtocol {
     private func discoverJSSURL() async -> String? {
         let result = await Shell.run(
             "/usr/bin/defaults",
-            args: ["read", "/Library/Preferences/com.jamfsoftware.jamf", "jss_url"]
+            args: ["read", "/Library/Preferences/com.jamfsoftware.jamf", "jss_url"],
+            timeout: 10 // cfprefsd can stall on broken MDM enrolments
         )
         guard result.exitCode == 0 else { return nil }
         let url = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         return url.isEmpty ? nil : url
+    }
+
+    /// Returns true only for http/https URLs, preventing file:// and other schemes
+    /// from being passed to curl (M-5).
+    private func isAllowedURL(_ string: String) -> Bool {
+        guard let u = URL(string: string) else { return false }
+        return u.scheme == "https" || u.scheme == "http"
     }
 }

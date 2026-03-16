@@ -24,21 +24,36 @@ enum Config {
             return key
         }
 
-        if FileManager.default.fileExists(atPath: configFileURL.path),
-           let contents = try? String(contentsOf: configFileURL, encoding: .utf8) {
+        guard FileManager.default.fileExists(atPath: configFileURL.path) else {
+            throw ConfigError.missingAPIKey
+        }
+
+        let contents: String
+        do {
+            // Check permissions before reading
             if let attrs = try? FileManager.default.attributesOfItem(atPath: configFileURL.path),
                let perms = attrs[.posixPermissions] as? Int,
                perms & 0o077 != 0 {
-                fputs("Warning: ~/.spacejamf/config has insecure permissions. Run: chmod 600 \(configFileURL.path)\n", stderr)
+                err("Warning: ~/.spacejamf/config has insecure permissions. Run: chmod 600 \(configFileURL.path)")
             }
-            for line in contents.components(separatedBy: .newlines) {
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                guard !trimmed.hasPrefix("#"), !trimmed.isEmpty else { continue }
-                let parts = trimmed.split(separator: "=", maxSplits: 1)
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                if parts.count == 2, parts[0] == "ANTHROPIC_API_KEY" {
-                    return parts[1]
+            contents = try String(contentsOf: configFileURL, encoding: .utf8)
+        } catch {
+            throw ConfigError.configFileUnreadable(configFileURL.path, error)
+        }
+
+        for line in contents.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.hasPrefix("#"), !trimmed.isEmpty else { continue }
+            let parts = trimmed.split(separator: "=", maxSplits: 1)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            if parts.count == 2, parts[0] == "ANTHROPIC_API_KEY" {
+                // Strip a single matching pair of " or ' delimiters (L-17).
+                var value = parts[1]
+                if (value.hasPrefix("\"") && value.hasSuffix("\"")) ||
+                   (value.hasPrefix("'")  && value.hasSuffix("'")) {
+                    value = String(value.dropFirst().dropLast())
                 }
+                return value
             }
         }
 
@@ -48,8 +63,25 @@ enum Config {
     // MARK: - Model
 
     /// Returns the model to use for Claude requests.
+    /// Warns to stderr if the value does not look like a Claude model name (NEW-3).
     static func model() -> String {
-        ProcessInfo.processInfo.environment["SPACEJAMF_MODEL"] ?? defaultModel
+        let m = ProcessInfo.processInfo.environment["SPACEJAMF_MODEL"] ?? defaultModel
+        if !m.hasPrefix("claude-") {
+            err("Warning: SPACEJAMF_MODEL='\(m)' does not start with 'claude-' — this may cause a 400 API error")
+        }
+        return m
+    }
+
+    // MARK: - Max tokens
+
+    /// Returns the max_tokens value for Claude requests.
+    /// Override with `SPACEJAMF_MAX_TOKENS`. Defaults to 4096.
+    static func maxTokens() -> Int {
+        if let str = ProcessInfo.processInfo.environment["SPACEJAMF_MAX_TOKENS"],
+           let value = Int(str), value > 0 {
+            return value
+        }
+        return 4096
     }
 }
 
@@ -57,18 +89,24 @@ enum Config {
 
 enum ConfigError: Error, CustomStringConvertible {
     case missingAPIKey
+    case configFileUnreadable(String, Error)
 
     var description: String {
-        """
-        Anthropic API key not found.
+        switch self {
+        case .missingAPIKey:
+            return """
+            Anthropic API key not found.
 
-        Provide it via environment variable:
-          export ANTHROPIC_API_KEY=sk-ant-...
+            Provide it via environment variable:
+              export ANTHROPIC_API_KEY=sk-ant-...
 
-        Or add it to ~/.spacejamf/config:
-          ANTHROPIC_API_KEY=sk-ant-...
+            Or add it to ~/.spacejamf/config:
+              ANTHROPIC_API_KEY=sk-ant-...
 
-        Run with --no-claude to skip AI analysis entirely.
-        """
+            Run with --no-claude to skip AI analysis entirely.
+            """
+        case .configFileUnreadable(let path, let error):
+            return "Could not read config file at \(path): \(error.localizedDescription)"
+        }
     }
 }

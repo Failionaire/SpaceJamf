@@ -29,22 +29,30 @@ struct CertCollector: CollectorProtocol {
         let (pems, hadMalformed) = extractPEMs(from: findCert.stdout)
         output += "=== Certificate Summary (\(pems.count) cert(s) in System.keychain) ===\n\n"
 
-        // Inspect all certs concurrently and reassemble in original order
+        // Inspect certs in bounded batches of 4 to avoid an unbounded burst of
+        // simultaneous openssl subprocesses on a loaded machine (L-6).
         var certInfos: [(index: Int, result: ShellResult)] = []
-        await withTaskGroup(of: (Int, ShellResult).self) { group in
-            for (index, pem) in pems.prefix(maxCertsToInspect).enumerated() {
-                group.addTask {
-                    let result = await Shell.run(
-                        "/usr/bin/openssl",
-                        args: ["x509", "-noout", "-subject", "-issuer", "-dates"],
-                        stdin: Data(pem.utf8),
-                        timeout: 5
-                    )
-                    return (index, result)
+        let certsToInspect = Array(pems.prefix(maxCertsToInspect))
+        let batchSize = min(4, certsToInspect.count)
+        for batchStart in stride(from: 0, to: certsToInspect.count, by: max(1, batchSize)) {
+            let batchEnd = min(batchStart + batchSize, certsToInspect.count)
+            let batch = certsToInspect[batchStart..<batchEnd]
+            await withTaskGroup(of: (Int, ShellResult).self) { group in
+                for (localIdx, pem) in batch.enumerated() {
+                    let globalIdx = batchStart + localIdx
+                    group.addTask {
+                        let result = await Shell.run(
+                            "/usr/bin/openssl",
+                            args: ["x509", "-noout", "-subject", "-issuer", "-dates"],
+                            stdin: Data(pem.utf8),
+                            timeout: 5
+                        )
+                        return (globalIdx, result)
+                    }
                 }
-            }
-            for await (index, result) in group {
-                certInfos.append((index: index, result: result))
+                for await (index, result) in group {
+                    certInfos.append((index: index, result: result))
+                }
             }
         }
         certInfos.sort { $0.index < $1.index }
@@ -76,6 +84,11 @@ struct CertCollector: CollectorProtocol {
 
         for line in pemChain.components(separatedBy: .newlines) {
             if line == begin {
+                if inCert {
+                    // A new BEGIN encountered while already inside a block; the prior
+                    // block is incomplete — mark as malformed and start fresh (L-5).
+                    hadMalformed = true
+                }
                 inCert = true
                 current = [line]
             } else if line == end {

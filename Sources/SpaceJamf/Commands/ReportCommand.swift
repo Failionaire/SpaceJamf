@@ -14,11 +14,17 @@ struct ReportCommand: AsyncParsableCommand {
         name: .long,
         help: "Output format: terminal (default) or html"
     )
-    var output: String = "terminal"
+    var outputFormat: String = "terminal"
+
+    @Option(
+        name: .long,
+        help: "Directory to write the HTML report into (default: current working directory)"
+    )
+    var outputDir: String = "."
 
     mutating func run() async throws {
-        guard output == "terminal" || output == "html" else {
-            err("Error: unknown output format '\(output)'. Valid values: terminal, html")
+        guard outputFormat == "terminal" || outputFormat == "html" else {
+            err("Error: unknown output format '\(outputFormat)'. Valid values: terminal, html")
             throw ExitCode.failure
         }
 
@@ -50,14 +56,15 @@ struct ReportCommand: AsyncParsableCommand {
             report.generatedAt = Date()
         }
 
-        switch output {
+        switch outputFormat {
         case "html":
-            let filename = "spacejamf-report-\(String(UUID().uuidString.prefix(8)).lowercased()).html"
+            let name = "spacejamf-report-\(String(UUID().uuidString.prefix(8)).lowercased()).html"
+            let filename = URL(fileURLWithPath: outputDir).appendingPathComponent(name).path
             // Pass empty results — raw output is not stored in the JSON report
             let html = HTMLReporter.render(report: report, results: [:])
             do {
                 try html.write(toFile: filename, atomically: true, encoding: .utf8)
-                print("HTML report saved to \(filename)")
+                print("Report written to \(URL(fileURLWithPath: filename).absoluteURL.path)")
             } catch {
                 err("Failed to write HTML: \(error)")
                 throw ExitCode.failure

@@ -21,10 +21,10 @@ struct JamfCollector: CollectorProtocol {
         }
 
         // Run all Jamf commands concurrently — they are fully independent
-        async let jamfVersionTask    = Shell.run(jamfPath, args: ["version"])
-        async let checkJSSTask       = Shell.run(jamfPath, args: ["checkJSSConnection"])
-        async let profilesListTask   = Shell.run("/usr/bin/profiles", args: ["list"])
-        async let profilesEnrollTask = Shell.run("/usr/bin/profiles", args: ["show", "-type", "enrollment"])
+        async let jamfVersionTask    = Shell.run(jamfPath, args: ["version"],                    timeout: 15)
+        async let checkJSSTask       = Shell.run(jamfPath, args: ["checkJSSConnection"],         timeout: 15)
+        async let profilesListTask   = Shell.run("/usr/bin/profiles", args: ["list"],           timeout: 15)
+        async let profilesEnrollTask = Shell.run("/usr/bin/profiles", args: ["show", "-type", "enrollment"], timeout: 15)
         let (jamfVersion, checkJSS, profilesList, profilesEnrollment) =
             await (jamfVersionTask, checkJSSTask, profilesListTask, profilesEnrollTask)
 

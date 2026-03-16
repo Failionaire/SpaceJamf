@@ -97,4 +97,57 @@ final class ScrubberTests: XCTestCase {
         let input = "Network Time: On\nNetwork Time Server: time.apple.com"
         XCTAssertEqual(Scrubber.scrub(input), input)
     }
+
+    // MARK: - Password pattern variants (M-8)
+
+    func testScrubsAllCapsPasswordColon() {
+        let output = Scrubber.scrub("PASSWORD: SomeSecret")
+        XCTAssertFalse(output.contains("SomeSecret"),
+                       "All-caps PASSWORD: should be redacted")
+        XCTAssertTrue(output.contains("[CREDENTIAL_REDACTED]"))
+    }
+
+    func testScrubsMixedCasePasswordColon() {
+        let output = Scrubber.scrub("passwOrd: SomeSecret")
+        XCTAssertFalse(output.contains("SomeSecret"),
+                       "Mixed-case passwOrd: should be redacted")
+        XCTAssertTrue(output.contains("[CREDENTIAL_REDACTED]"))
+    }
+
+    func testScrubsPasswordEqualsLower() {
+        let output = Scrubber.scrub("password = SuperSecret")
+        XCTAssertFalse(output.contains("SuperSecret"),
+                       "password = value form should be redacted")
+        XCTAssertTrue(output.contains("[CREDENTIAL_REDACTED]"))
+    }
+
+    func testScrubsPasswordEqualsAllCaps() {
+        let output = Scrubber.scrub("PASSWORD = SuperSecret")
+        XCTAssertFalse(output.contains("SuperSecret"),
+                       "PASSWORD = value with all-caps should be redacted")
+        XCTAssertTrue(output.contains("[CREDENTIAL_REDACTED]"))
+    }
+
+    // MARK: - IPv6 scrubbing (NEW-14)
+
+    func testScrubsFullFormIPv6() {
+        let output = Scrubber.scrub("Address: 2001:0db8:0000:0000:0000:0000:0000:7334")
+        XCTAssertFalse(output.contains("2001:0db8"),
+                       "Full 8-group IPv6 should be redacted")
+        XCTAssertTrue(output.contains("[IP_REDACTED]"))
+    }
+
+    func testScrubsCompressedIPv6() {
+        let output = Scrubber.scrub("Source: fe80::1")
+        XCTAssertFalse(output.contains("fe80::1"),
+                       "Compressed IPv6 fe80::1 should be redacted")
+        XCTAssertTrue(output.contains("[IP_REDACTED]"))
+    }
+
+    func testScrubsLoopbackIPv6() {
+        let output = Scrubber.scrub("Loopback: ::1")
+        XCTAssertFalse(output.contains("::1"),
+                       "IPv6 loopback ::1 should be redacted")
+        XCTAssertTrue(output.contains("[IP_REDACTED]"))
+    }
 }

@@ -9,13 +9,15 @@ struct ClockCollector: CollectorProtocol {
         var exitCodes: [String: Int32] = [:]
 
         // Run all three concurrently — they are fully independent
-        async let sntpTask        = Shell.run("/usr/bin/sntp", args: ["-t", "5", "time.apple.com"])
-        async let systemsetupTask = Shell.run("/usr/sbin/systemsetup", args: ["-getusingnetworktime"])
-        async let dateTask        = Shell.run("/bin/date", args: ["+%s"])
+        // NTP server is overridable for environments that cannot reach time.apple.com (C-2).
+        let ntpServer = ProcessInfo.processInfo.environment["SPACEJAMF_NTP_SERVER"] ?? "time.apple.com"
+        async let sntpTask        = Shell.run("/usr/bin/sntp",         args: ["-t", "5", ntpServer], timeout: 10)
+        async let systemsetupTask = Shell.run("/usr/sbin/systemsetup", args: ["-getusingnetworktime"],  timeout: 10)
+        async let dateTask        = Shell.run("/bin/date",             args: ["+%s"])
         let (sntp, systemsetup, dateResult) = await (sntpTask, systemsetupTask, dateTask)
 
         // ── sntp ─────────────────────────────────────────────────────────────
-        output += "=== sntp -t 5 time.apple.com ===\n\(sntp.stdout)"
+        output += "=== sntp -t 5 \(ntpServer) ===\n\(sntp.stdout)"
         if !sntp.stderr.isEmpty { output += "[stderr]: \(sntp.stderr)\n" }
         exitCodes["sntp"] = sntp.exitCode
 
@@ -26,13 +28,17 @@ struct ClockCollector: CollectorProtocol {
 
         // ── Local clock epoch ─────────────────────────────────────────────────
         let epochStr = dateResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        let epoch = Int(epochStr) ?? 0
-        let humanDate = DateFormatter.localizedString(
-            from: Date(timeIntervalSince1970: TimeInterval(epoch)),
-            dateStyle: .full,
-            timeStyle: .long
-        )
-        output += "\n=== System Clock ===\nEpoch:  \(epoch)\nLocal:  \(humanDate)\n"
+        if dateResult.exitCode != 0 || Int(epochStr) == nil {
+            output += "\n=== System Clock ===\n(unavailable)\n"
+        } else {
+            let epoch = Int(epochStr)!
+            let humanDate = DateFormatter.localizedString(
+                from: Date(timeIntervalSince1970: TimeInterval(epoch)),
+                dateStyle: .full,
+                timeStyle: .long
+            )
+            output += "\n=== System Clock ===\nEpoch:  \(epoch)\nLocal:  \(humanDate)\n"
+        }
         exitCodes["date"] = dateResult.exitCode
 
         return DiagnosticResult(area: area, rawOutput: output, exitCodes: exitCodes)

@@ -1,18 +1,28 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 
 enum TerminalReporter {
 
     // MARK: - ANSI codes
 
-    private static let reset  = "\u{1B}[0m"
-    private static let bold   = "\u{1B}[1m"
-    private static let dim    = "\u{1B}[2m"
-    private static let red    = "\u{1B}[31m"
-    private static let yellow = "\u{1B}[33m"
-    private static let blue   = "\u{1B}[34m"
-    private static let green  = "\u{1B}[32m"
-    private static let cyan   = "\u{1B}[36m"
-    private static let purple = "\u{1B}[35m"
+    /// True when stdout is a real TTY and NO_COLOR is not set.
+    /// When false all ANSI sequences are suppressed so piped/redirected
+    /// output is free of escape characters (L-20).
+    private static let ansiEnabled: Bool =
+        isatty(STDOUT_FILENO) != 0 &&
+        ProcessInfo.processInfo.environment["NO_COLOR"] == nil
+
+    private static let reset  = ansiEnabled ? "\u{1B}[0m" : ""
+    private static let bold   = ansiEnabled ? "\u{1B}[1m" : ""
+    private static let dim    = ansiEnabled ? "\u{1B}[2m" : ""
+    private static let red    = ansiEnabled ? "\u{1B}[31m" : ""
+    private static let yellow = ansiEnabled ? "\u{1B}[33m" : ""
+    private static let blue   = ansiEnabled ? "\u{1B}[34m" : ""
+    private static let green  = ansiEnabled ? "\u{1B}[32m" : ""
+    private static let cyan   = ansiEnabled ? "\u{1B}[36m" : ""
+    private static let purple = ansiEnabled ? "\u{1B}[35m" : ""
 
     // MARK: - Full AI report
 
@@ -22,7 +32,7 @@ enum TerminalReporter {
         print("\(bold)Summary\(reset)")
         print("  \(report.summary)\n")
 
-        let sorted = report.findings.sorted { $0.severity > $1.severity }
+        let sorted = report.findings.sorted { $0.resolvedSeverity > $1.resolvedSeverity }
 
         if sorted.isEmpty {
             print("\(green)✓ No issues found.\(reset)")
@@ -61,8 +71,8 @@ enum TerminalReporter {
     // MARK: - Helpers
 
     private static func renderFinding(_ finding: Finding, index: Int) {
-        let badge      = severityBadge(finding.severity)
-        let confidence = finding.confidence == .inferred
+        let badge      = severityBadge(finding.resolvedSeverity)
+        let confidence = finding.resolvedConfidence == .inferred
             ? "  \(dim)\(purple)[inferred]\(reset)"
             : "  \(dim)\(green)[certain]\(reset)"
 
@@ -80,9 +90,9 @@ enum TerminalReporter {
     }
 
     private static func printSummaryBox(findings: [Finding]) {
-        let critical = findings.filter { $0.severity == .critical }.count
-        let warnings = findings.filter { $0.severity == .warning  }.count
-        let infos    = findings.filter { $0.severity == .info     }.count
+        let critical = findings.filter { $0.resolvedSeverity == .critical }.count
+        let warnings = findings.filter { $0.resolvedSeverity == .warning  }.count
+        let infos    = findings.filter { $0.resolvedSeverity == .info     }.count
 
         let critStr = critical > 0 ? "\(bold)\(red)\(critical) critical\(reset)"   : "\(dim)0 critical\(reset)"
         let warnStr = warnings > 0 ? "\(bold)\(yellow)\(warnings) warning\(reset)" : "\(dim)0 warning\(reset)"
@@ -94,13 +104,14 @@ enum TerminalReporter {
     }
 
     private static func printHeader(_ title: String) {
-        // Clamp to 34 chars + "..." to avoid overflowing the fixed-width box border
-        let displayTitle = title.count <= 37
+        // Use a fixed-width ASCII symbol instead of an emoji to avoid double-width
+        // glyph alignment issues in terminals (L-13).
+        let displayTitle = title.count <= 35
             ? title
-            : String(title.prefix(34)) + "..."
+            : String(title.prefix(32)) + "..."
         print()
         print("\(bold)\(cyan)╔══════════════════════════════════════════╗\(reset)")
-        print("\(bold)\(cyan)║  🛸  \(displayTitle.padding(toLength: 37, withPad: " ", startingAt: 0))║\(reset)")
+        print("\(bold)\(cyan)║  [*]  \(displayTitle.padding(toLength: 35, withPad: " ", startingAt: 0))║\(reset)")
         print("\(bold)\(cyan)╚══════════════════════════════════════════╝\(reset)")
         print()
     }

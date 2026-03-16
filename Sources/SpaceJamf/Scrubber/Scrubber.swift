@@ -21,10 +21,13 @@ enum Scrubber {
     /// Matches long base64 blobs that follow ticket/credential keywords in klist output.
     private static let kerberosBlob = #"(?<=Ticket|ticket|credential|Credential|Key|key)[\s=:]+[A-Za-z0-9+/]{40,}={0,2}"#
 
-    /// Matches any line that contains a password key-value pair.
-    private static let passwordLine = #"(?m)^[^\n]*[Pp]assword[^\n]*:.*$"#
+    /// Matches any line that contains a password key-value pair (case-insensitive,
+    /// covers both colon and equals-sign separators).
+    private static let passwordLine = #"(?mi)^[^\n]*password[^\n]*[=:].*$"#
 
     // Pre-compiled regex objects — compiled once at first use, never again.
+    // Safety: each pattern is a compile-time literal and has been validated by
+    // the test suite. A panic here is always a programmer error, not a runtime one.
     private static let ipv4Regex         = try! NSRegularExpression(pattern: ipv4)
     private static let ipv6Regex         = try! NSRegularExpression(pattern: ipv6)
     private static let kerberosBlobRegex = try! NSRegularExpression(pattern: kerberosBlob)

@@ -35,23 +35,52 @@ enum PromptBuilder {
     - remediation_steps must be an array of strings even when there is only one step.
     """
 
+    // MARK: - Cached system context
+
+    /// Caches sw_vers and uname -m output so repeated build() calls in the same
+    /// process do not re-spawn the binaries each time (L-14).
+    private actor SystemContextCache {
+        var swVers: String?
+        var uname: String?
+
+        func swVersOutput() async -> String {
+            if let cached = swVers { return cached }
+            let result = await Shell.run("/usr/bin/sw_vers", args: [])
+            let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            swVers = output
+            return output
+        }
+
+        func unameOutput() async -> String {
+            if let cached = uname { return cached }
+            let result = await Shell.run("/usr/bin/uname", args: ["-m"])
+            let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            uname = output
+            return output
+        }
+    }
+
+    private static let systemContextCache = SystemContextCache()
+
+    // Maximum bytes per diagnostic section embedded into the prompt.
+    // Clamps prompt-injection blast radius from large or adversarial tool output (E-2).
+    private static let sectionSizeLimit = 8 * 1024
+
     // MARK: - Build
 
     /// Assembles the user-facing Claude prompt from scrubbed diagnostic results.
     /// Also fetches `sw_vers` and `uname -m` to give Claude system context.
     static func build(from results: [DiagnosticResult]) async -> (system: String, user: String) {
-        // Gather system context concurrently with a small task group
-        async let swVers = Shell.run("/usr/bin/sw_vers", args: [])
-        async let uname  = Shell.run("/usr/bin/uname",  args: ["-m"])
-
-        let (swVersResult, unameResult) = await (swVers, uname)
+        async let swVers = systemContextCache.swVersOutput()
+        async let uname  = systemContextCache.unameOutput()
+        let (swVersOutput, unameOutput) = await (swVers, uname)
 
         var sections: [String] = []
 
         sections.append("""
         ## System Context
-        \(swVersResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
-        Architecture: \(unameResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+        \(swVersOutput)
+        Architecture: \(unameOutput)
         """)
 
         for result in results.sorted(by: { $0.area.rawValue < $1.area.rawValue }) {
@@ -60,17 +89,19 @@ enum PromptBuilder {
                 .map { "\($0.key): \($0.value)" }
                 .joined(separator: ", ")
 
+            let raw = result.scrubbedOutput ?? ""
+            let clampedRaw = raw.count <= sectionSizeLimit
+                ? raw
+                : String(raw.prefix(sectionSizeLimit)) + "\n… [output truncated at 8 KB]"
+
             sections.append("""
             ## \(result.area.rawValue.uppercased()) Diagnostic
             Exit Codes: \(exitSummary.isEmpty ? "none" : exitSummary)
 
-            \(result.scrubbedOutput ?? "")
+            \(clampedRaw)
             """)
         }
 
-        // NOTE: scrubbed diagnostic output is embedded verbatim from local system commands.
-        // If future versions support external file input, apply a per-section size clamp
-        // (e.g. 8 KB) to limit prompt-injection blast radius before that feature ships.
         let userPrompt = sections.joined(separator: "\n\n---\n\n")
         return (system: systemPrompt, user: userPrompt)
     }

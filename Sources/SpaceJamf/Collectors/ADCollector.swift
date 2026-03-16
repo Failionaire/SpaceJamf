@@ -25,8 +25,11 @@ struct ADCollector: CollectorProtocol {
         exitCodes["klist"] = klist.exitCode
 
         // ── dscl . -read /Computers/<hostname> ───────────────────────────────
-        let hostname = hostnameResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        let dscl = await Shell.run(
+        let hostname = hostnameResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)        guard !hostname.isEmpty else {
+            output += "\n=== dscl lookup ===\nhostname unavailable; skipping dscl lookup.\n"
+            exitCodes["dscl"] = -1
+            return DiagnosticResult(area: area, rawOutput: output, exitCodes: exitCodes)
+        }        let dscl = await Shell.run(
             "/usr/bin/dscl",
             args: [".", "-read", "/Computers/\(hostname)"],
             timeout: 15

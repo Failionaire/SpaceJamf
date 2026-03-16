@@ -14,6 +14,21 @@ struct ShellResult {
     }
 }
 
+// MARK: - Thread-safe flag
+
+/// Thread-safe mutable boolean backed by `NSLock`.
+private final class AtomicBool: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value: Bool
+    init(_ value: Bool) { _value = value }
+    var value: Bool {
+        get { lock.withLock { _value } }
+        set { lock.withLock { _value = newValue } }
+    }
+}
+
+// MARK: - Shell
+
 /// Thin async wrapper around `Foundation.Process`.
 enum Shell {
     /// Run an executable at `path` with `args`, optionally feeding `stdin` data.
@@ -21,7 +36,8 @@ enum Shell {
     /// and a descriptive stderr string rather than throwing.
     ///
     /// - Parameter timeout: If non-nil, the process is sent SIGTERM after this
-    ///   many seconds and the result's stderr will note the timeout.
+    ///   many seconds (followed by SIGKILL after a 5-second grace period) and
+    ///   the result's stderr will note the timeout.
     static func run(
         _ path: String,
         args: [String] = [],
@@ -29,7 +45,7 @@ enum Shell {
         timeout: TimeInterval? = nil
     ) async -> ShellResult {
         await withCheckedContinuation { continuation in
-            let process   = Process()
+            let process = Process()
             process.executableURL = URL(fileURLWithPath: path)
             process.arguments     = args
 
@@ -38,51 +54,111 @@ enum Shell {
             process.standardOutput = stdoutPipe
             process.standardError  = stderrPipe
 
-            if let inputData {
-                let stdinPipe = Pipe()
-                process.standardInput = stdinPipe
-                stdinPipe.fileHandleForWriting.write(inputData)
-                stdinPipe.fileHandleForWriting.closeFile()
+            // Assign stdin pipe before run(); write to it *after* run() to avoid
+            // deadlock when inputData exceeds the OS pipe buffer (~64 KB on macOS).
+            var stdinPipe: Pipe?
+            if inputData != nil {
+                let pipe = Pipe()
+                process.standardInput = pipe
+                stdinPipe = pipe
             }
 
-            // Schedule a kill if a timeout was requested.
-            var timedOut = false
+            // Serial queue used to safely accumulate output from concurrent
+            // readabilityHandler callbacks and the terminationHandler.
+            let ioQueue = DispatchQueue(label: "com.spacejamf.shell.io")
+            var stdoutAccum = Data()
+            var stderrAccum = Data()
+
+            // DispatchGroup tracks EOF on both pipes before the continuation is resumed.
+            // Continuously draining the pipes via readabilityHandler prevents the child
+            // from blocking on write() when its output exceeds the OS pipe buffer —
+            // which would cause terminationHandler to never fire (NEW-1).
+            let ioGroup = DispatchGroup()
+            ioGroup.enter() // stdout EOF
+            ioGroup.enter() // stderr EOF
+
+            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    handle.readabilityHandler = nil
+                    ioGroup.leave()
+                } else {
+                    ioQueue.async { stdoutAccum.append(chunk) }
+                }
+            }
+            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    handle.readabilityHandler = nil
+                    ioGroup.leave()
+                } else {
+                    ioQueue.async { stderrAccum.append(chunk) }
+                }
+            }
+
+            // Concurrency-safe flag for timeout state (H-1).
+            let timedOut = AtomicBool(false)
+            // Capture the unwrapped seconds value now so the timeout message
+            // never needs `?? 0` (timedOut is only set when timeout is non-nil) (L-1).
+            let timeoutSeconds = Int(timeout ?? 0)
             var timeoutWorkItem: DispatchWorkItem?
-            if let timeout {
+            if let t = timeout {
                 let workItem = DispatchWorkItem {
-                    timedOut = true
+                    timedOut.value = true
                     process.terminate()
+                    // Follow up with SIGKILL after a grace period in case the child
+                    // catches or ignores SIGTERM (e.g. a hung kernel transaction) (NEW-2).
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+                        if process.isRunning {
+                            kill(process.processIdentifier, SIGKILL)
+                        }
+                    }
                 }
                 timeoutWorkItem = workItem
-                DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: workItem)
+                DispatchQueue.global().asyncAfter(deadline: .now() + t, execute: workItem)
             }
 
             process.terminationHandler = { proc in
                 timeoutWorkItem?.cancel()
-                let stdout = String(
-                    data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
-                    encoding: .utf8
-                ) ?? ""
-                let stderr = String(
-                    data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
-                    encoding: .utf8
-                ) ?? ""
-                let stderrFinal = timedOut
-                    ? "Process timed out after \(Int(timeout ?? 0))s and was terminated."
-                    : stderr
-                continuation.resume(
-                    returning: ShellResult(
-                        stdout:   stdout,
-                        stderr:   stderrFinal,
-                        exitCode: proc.terminationStatus
+                let exitCode   = proc.terminationStatus
+                let didTimeout = timedOut.value
+                // Wait for both pipe EOF signals, then read the accumulated data.
+                // ioGroup.notify runs on ioQueue (serial), so all append() blocks
+                // dispatched by readabilityHandlers are guaranteed to complete first.
+                ioGroup.notify(queue: ioQueue) {
+                    let stdout = String(data: stdoutAccum, encoding: .utf8) ?? ""
+                    let stderr = String(data: stderrAccum, encoding: .utf8) ?? ""
+                    let stderrFinal = didTimeout
+                        ? "Process timed out after \(timeoutSeconds)s and was terminated."
+                        : stderr
+                    continuation.resume(
+                        returning: ShellResult(
+                            stdout:   stdout,
+                            stderr:   stderrFinal,
+                            exitCode: exitCode
+                        )
                     )
-                )
+                }
             }
 
             do {
                 try process.run()
+                // Write stdin after the process has started so the child is already
+                // reading — prevents deadlock if inputData exceeds the pipe buffer (M-10).
+                if let inputData, let pipe = stdinPipe {
+                    DispatchQueue.global().async {
+                        pipe.fileHandleForWriting.write(inputData)
+                        pipe.fileHandleForWriting.closeFile()
+                    }
+                }
             } catch {
                 timeoutWorkItem?.cancel()
+                // Nil out handlers so their EOF callbacks don't fire unexpectedly.
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
+                // Balance the group entries so waiting code doesn't deadlock.
+                ioGroup.leave()
+                ioGroup.leave()
                 continuation.resume(
                     returning: ShellResult(
                         stdout:   "",

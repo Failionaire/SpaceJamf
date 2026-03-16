@@ -34,6 +34,18 @@ enum ClaudeClient {
         let content: [ContentBlock]
     }
 
+    // MARK: - Private URLSession
+
+    /// Custom session with generous timeouts to accommodate large diagnostics payloads
+    /// and long Claude inference times (M-12). URLSession.shared defaults to 60 s,
+    /// which is too short for legitimate multi-area analysis calls.
+    private static let urlSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest  = 120
+        config.timeoutIntervalForResource = 180
+        return URLSession(configuration: config)
+    }()
+
     // MARK: - Public API
 
     /// POST a prompt to the Anthropic Messages API and decode the `AnalysisReport`.
@@ -54,13 +66,13 @@ enum ClaudeClient {
 
         let body = RequestBody(
             model:     model,
-            maxTokens: 4096,
+            maxTokens: Config.maxTokens(),
             system:    prompt.system,
             messages:  [RequestMessage(role: "user", content: prompt.user)]
         )
         request.httpBody = try JSONEncoder().encode(body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await urlSession.data(for: request)
 
         guard let http = response as? HTTPURLResponse else {
             throw ClaudeError.invalidResponse

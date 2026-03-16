@@ -1,0 +1,27 @@
+Active Directory Domain   = corp.example.com
+Computer Account          = MACBOOK01$
+Active Directory Server   = dc01.corp.example.com
+
+Advanced Options - User Experience
+  Create mobile account at login:          Enabled
+  Require confirmation before creation:    Disabled
+  Force home to startup disk:              Enabled
+  Use Windows UNC path for home:           Not Configured
+  Mount home as sharepoint:                Disabled
+  Default user Shell:                      /bin/zsh
+
+Advanced Options - Mappings
+  Preferred domain server:                 dc01.corp.example.com
+  Allowed admin groups:                    corp\Domain Admins
+  Map UID to attribute:                    Not Configured
+  Map user GID to attribute:               Not Configured
+  Map group GID to attribute:              Not Configured
+  Generate Kerberos authority:             Enabled
+  Restrict Dynamic DNS updates:            Not Configured
+  Namespace mode:                          domain
+
+Advanced Options - Administrative
+  Packet sign:                             allow
+  Packet encrypt:                          allow
+  Password change interval:                14
+  Restrict DDNS:                           Not Configured

@@ -1,0 +1,21 @@
+Credentials cache: API:com.apple.GSS.KerberosAgent
+        Principal: jdoe@CORP.EXAMPLE.COM
+    Cache version: 0
+
+Server: krbtgt/CORP.EXAMPLE.COM@CORP.EXAMPLE.COM
+Client: jdoe@CORP.EXAMPLE.COM
+Ticket etype: aes256-cts-hmac-sha1-96, kvno 5
+Ticket flags: pre-authent, renewable, renewable-ok, enc-tkt-in-skey
+Auth time:  Mar 10 09:15:00 2026
+End time:   Mar 10 19:15:00 2026  (EXPIRED)
+Renew till: Mar 17 09:15:00 2026
+
+Server: host/dc01.corp.example.com@CORP.EXAMPLE.COM
+Client: jdoe@CORP.EXAMPLE.COM
+Ticket etype: aes128-cts-hmac-sha1-96, kvno 3
+Ticket flags: pre-authent, renewable
+Auth time:  Mar 10 09:15:00 2026
+End time:   Mar 10 19:15:00 2026  (EXPIRED)
+Renew till: Mar 17 09:15:00 2026
+
+# Note: DC contacted at 10.20.30.40 (for scrubber test coverage)

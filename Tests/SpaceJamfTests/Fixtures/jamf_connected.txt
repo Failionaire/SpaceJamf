@@ -1,0 +1,15 @@
+Checking connection to the JSS...
+The JSS at https://corp.jamfcloud.com/ replied with a status of 200.
+The JSS is available.
+
+jamf version: 10.48.1-t1699638840
+
+=== profiles list ===
+_computerlevel[1] attribute: profileIdentifier: com.corp.mdm.enroll
+_computerlevel[2] attribute: profileIdentifier: com.corp.wifi.main
+_computerlevel[3] attribute: profileIdentifier: com.corp.certificates.root
+
+=== profiles show -type enrollment ===
+Enrollment profile: MDM enrollment active
+MDM Server URL: https://corp.jamfcloud.com/mdm/ServerURL
+Push Certificate Expiry: 2025-11-15 12:00:00 +0000

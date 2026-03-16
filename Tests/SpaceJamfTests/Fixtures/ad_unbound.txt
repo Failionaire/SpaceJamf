@@ -1,0 +1,5 @@
+dsconfigad: This computer is not bound to Active Directory.
+
+Active Directory Forest:   (none)
+Active Directory Domain:   (none)
+Computer Account:          (none)

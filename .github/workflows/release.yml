@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-universal:
+    name: Build Universal Binary
+    runs-on: macos-14          # Apple Silicon runner; cross-compiles x86_64 fine
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build arm64
+        run: |
+          swift build \
+            -c release \
+            --arch arm64 \
+            2>&1
+
+      - name: Build x86_64
+        run: |
+          swift build \
+            -c release \
+            --arch x86_64 \
+            2>&1
+
+      - name: Create universal binary with lipo
+        run: |
+          lipo -create \
+            .build/arm64-apple-macosx/release/SpaceJamf \
+            .build/x86_64-apple-macosx/release/SpaceJamf \
+            -output SpaceJamf
+          lipo -info SpaceJamf
+
+      - name: Verify binary runs
+        run: ./SpaceJamf --version
+
+      - name: Package
+        run: |
+          ARCHIVE="SpaceJamf-macos-universal-${{ github.ref_name }}.zip"
+          zip "$ARCHIVE" SpaceJamf
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+          shasum -a 256 "$ARCHIVE" | tee SpaceJamf.sha256
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ARCHIVE }}
+            SpaceJamf.sha256

@@ -8,9 +8,14 @@ struct ClockCollector: CollectorProtocol {
         var output = ""
         var exitCodes: [String: Int32] = [:]
 
-        // Run all three concurrently — they are fully independent
-        // NTP server is overridable for environments that cannot reach time.apple.com (C-2).
-        let ntpServer = ProcessInfo.processInfo.environment["SPACEJAMF_NTP_SERVER"] ?? "time.apple.com"
+        // CK1: Trim the env var value and fall back to the default if blank/whitespace-only.
+        // ntpServer comes from a user-controlled env var. Shell.run passes it as a
+        // process argument (not a shell string), so shell injection is not possible.
+        // The value appears verbatim in diagnostic output and is scrubbed by Scrubber.
+        let rawNTP   = ProcessInfo.processInfo.environment["SPACEJAMF_NTP_SERVER"] ?? ""
+        let ntpServer = rawNTP.trimmingCharacters(in: .whitespaces).isEmpty
+            ? "time.apple.com"
+            : rawNTP.trimmingCharacters(in: .whitespaces)
         async let sntpTask        = Shell.run("/usr/bin/sntp",         args: ["-t", "5", ntpServer], timeout: 10)
         async let systemsetupTask = Shell.run("/usr/sbin/systemsetup", args: ["-getusingnetworktime"],  timeout: 10)
         async let dateTask        = Shell.run("/bin/date",             args: ["+%s"])
@@ -28,16 +33,16 @@ struct ClockCollector: CollectorProtocol {
 
         // ── Local clock epoch ─────────────────────────────────────────────────
         let epochStr = dateResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        if dateResult.exitCode != 0 || Int(epochStr) == nil {
-            output += "\n=== System Clock ===\n(unavailable)\n"
-        } else {
-            let epoch = Int(epochStr)!
+        // CK-1: Use if-let rather than a pre-check + force-unwrap for clarity and safety.
+        if dateResult.exitCode == 0, let epoch = Int(epochStr) {
             let humanDate = DateFormatter.localizedString(
                 from: Date(timeIntervalSince1970: TimeInterval(epoch)),
                 dateStyle: .full,
                 timeStyle: .long
             )
             output += "\n=== System Clock ===\nEpoch:  \(epoch)\nLocal:  \(humanDate)\n"
+        } else {
+            output += "\n=== System Clock ===\n(unavailable)\n"
         }
         exitCodes["date"] = dateResult.exitCode
 

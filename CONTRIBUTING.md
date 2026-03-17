@@ -8,7 +8,7 @@ Thanks for your interest in contributing. This is a focused tool, so please read
 
 - **Security first.** SpaceJamf handles sensitive diagnostic data. Any change that touches data collection, scrubbing, or transmission to the Claude API gets extra scrutiny. If you're unsure, open an issue to discuss before writing code.
 - **Keep the scrubber honest.** If you add a new collector that may surface sensitive data (IPs, credentials, tokens), update `Scrubber.swift` and add a test in `ScrubberTests.swift` that proves the sensitive value is absent from `scrubbedOutput`.
-- **No raw output leaves the device.** `rawOutput` on `DiagnosticResult` must never be passed to `ClaudeClient` or written to an output file. This is a hard invariant.
+- **No raw output leaves the device.** `rawOutput` on `DiagnosticResult` must never be passed to `ClaudeClient` or written to an output file. This is a hard invariant enforced at the type level: `scrubbedOutput` is `private(set)` and can only be populated via `DiagnosticResult.withScrubbedOutput(_:)`, ensuring every write goes through the scrubber. CT-2: Any refactor that removes or weakens this protection will be rejected.
 - **Scope.** Don't add features not in the roadmap without opening an issue first. The project's value comes from being focused and trustworthy, not from having the most flags.
 
 ---
@@ -20,7 +20,8 @@ Requires macOS 13+, Swift 5.7+ (Xcode 14+).
 ```bash
 git clone https://github.com/Failionaire/SpaceJamf.git
 cd SpaceJamf
-swift build
+# CT-1: Build with strict concurrency to catch Sendable and actor-isolation issues at compile time.
+swift build -Xswiftc -strict-concurrency=complete
 swift test
 ```
 
@@ -94,9 +95,15 @@ All tests are fixture-based — no real Jamf or AD environment is required. Test
 
 ---
 
+## Code Style
+
+A `.swiftformat` configuration file is included in the repository root. Run `swiftformat .` before committing to enforce consistent formatting.
+
+---
+
 ## Pull Request Checklist
 
-- [ ] `swift build` passes with no warnings
+- [ ] `swift build -Xswiftc -strict-concurrency=complete` passes with no warnings
 - [ ] `swift test` passes
 - [ ] Any new collector includes fixture + test
 - [ ] Any new scrubber pattern includes a test asserting the sensitive value is absent
@@ -107,10 +114,16 @@ All tests are fixture-based — no real Jamf or AD environment is required. Test
 
 ## Reporting Bugs
 
-Use the [bug report template](.github/ISSUE_TEMPLATE/bug_report.md). Please redact any sensitive data before pasting command output — the issue tracker is public.
+Use the [bug report template](.github/ISSUE_TEMPLATE/bug_report.md) if one exists,
+or open a plain GitHub issue. Please redact any sensitive data before pasting command
+output — the issue tracker is public.
 
 ---
 
 ## Suggesting Features
 
-Open a [feature request](.github/ISSUE_TEMPLATE/feature_request.md) before writing code. The v2 roadmap item (`--explain <finding-id>`) is already planned; smaller scoped ideas are very welcome.
+Open a [feature request](.github/ISSUE_TEMPLATE/feature_request.md) (or a plain issue)
+before writing code. The v2 roadmap item (`--explain <finding-id>`) is already planned;
+smaller scoped ideas are very welcome.
+
+

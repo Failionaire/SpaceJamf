@@ -1,3 +1,4 @@
+# SYNTHETIC TEST DATA — does not represent any real Jamf instance.
 Checking connection to the JSS...
 The JSS at https://corp.jamfcloud.com/ replied with a status of 200.
 The JSS is available.

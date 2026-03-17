@@ -1,0 +1,10 @@
+# SYNTHETIC TEST DATA — does not represent any real network or infrastructure.
+# FX2: Representative NetworkCollector output for a Mac that can reach its AD domain
+# and JSS. Used as a fixture baseline for collector output parsing tests.
+=== DNS: host corp.example.com ===
+corp.example.com has address 10.20.30.1
+corp.example.com has address 10.20.30.2
+corp.example.com mail is handled by 10 mail.corp.example.com.
+
+=== JSS Reachability: https://corp.jamfcloud.com/ ===
+HTTP status: 200

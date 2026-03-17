@@ -4,8 +4,13 @@ struct JamfCollector: CollectorProtocol {
     let area: DiagnosticArea = .jamf
     let requiresElevation: Bool = false
 
-    /// Allows overriding the path for unit tests.
-    var jamfPath: String = "/usr/local/bin/jamf"
+    /// Path to the jamf binary. Injectable via the designated initialiser for unit tests.
+    let jamfPath: String
+
+    /// - Parameter jamfPath: Path to the jamf binary (default: `/usr/local/bin/jamf`).
+    init(jamfPath: String = "/usr/local/bin/jamf") {
+        self.jamfPath = jamfPath
+    }
 
     func collect() async -> DiagnosticResult {
         var output = ""
@@ -44,12 +49,17 @@ struct JamfCollector: CollectorProtocol {
         exitCodes["profiles-list"] = profilesList.exitCode
 
         // ── profiles show -type enrollment ────────────────────────────────────
+        // JA-2: `profiles show -type enrollment` returns richer MDM payload detail
+        // than `profiles list` alone (e.g. PayloadUUID, server URL, managed state).
         output += "\n=== profiles show -type enrollment ===\n\(profilesEnrollment.stdout)"
         if !profilesEnrollment.stderr.isEmpty {
             output += "[stderr]: \(profilesEnrollment.stderr)\n"
         }
         exitCodes["profiles-enrollment"] = profilesEnrollment.exitCode
 
+        // JA-3: The JSS URL appears in checkJSSConnection output and may include the
+        // hostname or IP. Scrubber.scrub() will redact IP literals; hostname scrubbing
+        // (if required) must be configured separately via the SPACEJAMF_SCRUB_WORDS env var.
         return DiagnosticResult(area: area, rawOutput: output, exitCodes: exitCodes)
     }
 }

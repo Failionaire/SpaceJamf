@@ -1,3 +1,6 @@
+# SYNTHETIC TEST DATA — does not represent any real user or Kerberos realm.
+# FX4: Ticket end times are intentionally set in the past to test expired-ticket
+# detection. The (EXPIRED) markers are the key signal consumed by ADCollector.
 Credentials cache: API:com.apple.GSS.KerberosAgent
         Principal: jdoe@CORP.EXAMPLE.COM
     Cache version: 0

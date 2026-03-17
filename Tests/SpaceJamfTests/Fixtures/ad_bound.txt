@@ -1,3 +1,4 @@
+# SYNTHETIC TEST DATA — does not represent any real machine or domain.
 Active Directory Domain   = corp.example.com
 Computer Account          = MACBOOK01$
 Active Directory Server   = dc01.corp.example.com

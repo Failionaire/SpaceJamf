@@ -1,3 +1,4 @@
+# SYNTHETIC TEST DATA — does not represent any real machine or domain.
 dsconfigad: This computer is not bound to Active Directory.
 
 Active Directory Forest:   (none)

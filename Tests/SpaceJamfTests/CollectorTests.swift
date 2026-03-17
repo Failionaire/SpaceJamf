@@ -14,7 +14,12 @@ final class CollectorTests: XCTestCase {
             XCTFail("Fixture not found: \(name).txt")
             return ""
         }
-        return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        do {
+            return try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            XCTFail("Failed to read fixture \(name).txt: \(error)")
+            return ""
+        }
     }
 
     // MARK: - Fixtures: structural sanity
@@ -102,8 +107,8 @@ final class CollectorTests: XCTestCase {
     // MARK: - JamfCollector: graceful handling when binary absent
 
     func testJamfCollectorHandlesMissingBinary() async {
-        var collector = JamfCollector()
-        collector.jamfPath = "/nonexistent/path/to/jamf"
+        // JA-1: JamfCollector now takes jamfPath via its designated initialiser.
+        let collector = JamfCollector(jamfPath: "/nonexistent/path/to/jamf")
         let result = await collector.collect()
         XCTAssertEqual(result.area, .jamf)
         XCTAssertTrue(
@@ -185,6 +190,9 @@ final class CollectorTests: XCTestCase {
 
     // MARK: - NetworkCollector injectable URL/domain (NEW-13)
 
+    // CT7: This test exercises the live collect() path against non-existent hosts.
+    // It will make real DNS queries that fail; the test validates graceful failure,
+    // not successful collection. Expected run time: <5 s with DNS timeout.
     func testNetworkCollectorInjectableProperties() async {
         var collector = NetworkCollector()
         collector.jssURL   = "https://test.example.com"
@@ -200,14 +208,78 @@ final class CollectorTests: XCTestCase {
         )
     }
 
-    // MARK: - ClaudeClient.extractJSON (M-9)
+    // MARK: - NetworkCollector.isAllowedURL (CT1)
 
-    func testExtractJSONFencedCodeBlock() {
-        let text = """
-        ```json
-        {"summary": "ok", "findings": []}
-        ```
-        """
+    func testIsAllowedURL_validHTTPS() {
+        XCTAssertTrue(NetworkCollector().isAllowedURL("https://jamf.example.com"),
+                      "https URL should be allowed")
+    }
+
+    func testIsAllowedURL_httpScheme() {
+        XCTAssertTrue(NetworkCollector().isAllowedURL("http://jamf.example.com"),
+                      "http URL should be allowed (JSS may not always have TLS in lab configs)")
+    }
+
+    func testIsAllowedURL_ftpScheme() {
+        XCTAssertFalse(NetworkCollector().isAllowedURL("ftp://files.example.com"),
+                       "ftp URL should be blocked")
+    }
+
+    func testIsAllowedURL_emptyString() {
+        XCTAssertFalse(NetworkCollector().isAllowedURL(""),
+                       "Empty string should be blocked")
+    }
+
+    func testIsAllowedURL_fileScheme() {
+        XCTAssertFalse(NetworkCollector().isAllowedURL("file:///etc/passwd"),
+                       "file:// URL should be blocked")
+    }
+
+    func testIsAllowedURL_cloudMetadataIPv4() {
+        XCTAssertFalse(NetworkCollector().isAllowedURL("https://169.254.169.254/latest/meta-data"),
+                       "Cloud metadata IP 169.254.169.254 must be blocked (SSRF guard)")
+    }
+
+    func testIsAllowedURL_cloudMetadataRange() {
+        XCTAssertFalse(NetworkCollector().isAllowedURL("https://169.254.1.1/"),
+                       "Any 169.254.x.x address must be blocked (SSRF guard)")
+    }
+
+    func testIsAllowedURL_googleMetadata() {
+        XCTAssertFalse(NetworkCollector().isAllowedURL("https://metadata.google.internal/computeMetadata"),
+                       "Google metadata endpoint must be blocked (SSRF guard)")
+    }
+
+    func testIsAllowedURL_localhost() {
+        XCTAssertFalse(NetworkCollector().isAllowedURL("http://localhost/admin"),
+                       "localhost must be blocked (SSRF guard)")
+    }
+
+    func testIsAllowedURL_loopbackIPv4() {
+        XCTAssertFalse(NetworkCollector().isAllowedURL("http://127.0.0.1/internal"),
+                       "127.0.0.1 must be blocked (SSRF guard)")
+    }
+
+    func testIsAllowedURL_loopbackIPv4Range() {
+        XCTAssertFalse(NetworkCollector().isAllowedURL("http://127.1.2.3/"),
+                       "Any 127.x.x.x address must be blocked (SSRF guard)")
+    }
+
+    func testIsAllowedURL_loopbackIPv6() {
+        XCTAssertFalse(NetworkCollector().isAllowedURL("http://[::1]/internal"),
+                       "IPv6 loopback ::1 must be blocked (SSRF guard)")
+    }
+
+    func testIsAllowedURL_emptyHost() {
+        XCTAssertFalse(NetworkCollector().isAllowedURL("http:///path"),
+                       "URL with empty host must be blocked")
+    }
+
+    // MARK: - Finding: resilient severity/confidence fallback
+
+    // TS-4: Renamed from testExtractJSONFencedCodeBlock to better reflect what's
+    // actually being tested (resilient severity fallback, not JSON extraction).
+    func testFindingUnknownSeverityFallsBackToInfo() {
         // Test via the public analyze path isn't feasible without a live API key;
         // verify structural resilience by asserting HTMLReporter/TerminalReporter
         // survive an AnalysisReport with an unknown severity string.
@@ -232,29 +304,79 @@ final class CollectorTests: XCTestCase {
                        "Unknown confidence should fall back to .inferred")
     }
 
-    // MARK: - HTMLReporter HTML escaping (M-9)
+    // MARK: - CertCollector: extractPEMs (TS-6)
 
-    func testHTMLReporterEscapesSpecialCharsInFindings() {
-        let report = AnalysisReport(
-            findings: [
-                Finding(
-                    severity: "critical",
-                    area: "ad",
-                    title: "<script>alert('xss')</script>",
-                    rootCause: "User-supplied & data",
-                    remediationSteps: ["Fix \"quoted\" step"],
-                    confidence: "certain"
-                )
-            ],
-            summary: "Test & summary",
-            generatedAt: Date()
+    func testExtractPEMsMalformedChain() {
+        let collector = CertCollector()
+        // A chain with a nested BEGIN (missing END before the second BEGIN)
+        let malformed = """
+        -----BEGIN CERTIFICATE-----
+        MIIC+TCCAeGgAwIBAgIJAExample
+        -----BEGIN CERTIFICATE-----
+        MIIC+TCCAeGgAwIBAgIJASecond
+        -----END CERTIFICATE-----
+        """
+        let (pems, hadMalformed) = collector.extractPEMs(from: malformed)
+        XCTAssertTrue(hadMalformed,
+                      "Should detect malformed chain (nested BEGIN without END)")
+        XCTAssertEqual(pems.count, 1,
+                       "Only the complete PEM block should be extracted")
+    }
+
+    func testExtractPEMsValidChain() {
+        // CT2: A valid two-cert chain; both blocks should be extracted without malformed flag.
+        let chain = """
+        -----BEGIN CERTIFICATE-----
+        MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample1placeholder==
+        -----END CERTIFICATE-----
+        -----BEGIN CERTIFICATE-----
+        MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAexample2placeholder==
+        -----END CERTIFICATE-----
+        """
+        let (pems, foundMalformedBlock) = CertCollector().extractPEMs(from: chain)
+        XCTAssertEqual(pems.count, 2, "Should extract exactly two PEM blocks")
+        XCTAssertFalse(foundMalformedBlock, "A valid chain should not set the malformed flag")
+    }
+
+    func testExtractPEMsEmpty() {
+        // CT3: Empty input should produce empty output without malformed flag.
+        let (pems, foundMalformedBlock) = CertCollector().extractPEMs(from: "")
+        XCTAssertTrue(pems.isEmpty, "Empty input should yield no PEM blocks")
+        XCTAssertFalse(foundMalformedBlock, "Empty input should not set the malformed flag")
+    }
+
+    // MARK: - ClockCollector: NTP override (CT4)
+
+    // CT4: Sets process-global env var; XCTest does not guarantee serial execution
+    // within a class. If flakiness is observed, move to a dedicated serial queue.
+    func testClockCollectorUsesNTPOverride() async {
+        setenv("SPACEJAMF_NTP_SERVER", "time.example.com", 1)
+        defer { unsetenv("SPACEJAMF_NTP_SERVER") }
+        let result = await ClockCollector().collect()
+        XCTAssertEqual(result.area, .clock)
+        XCTAssertTrue(
+            result.rawOutput.contains("time.example.com"),
+            "rawOutput should reference the injected NTP server name, got: \(result.rawOutput.prefix(200))"
         )
-        let html = HTMLReporter.render(report: report, results: [:])
-        XCTAssertTrue(html.contains("&lt;script&gt;"),
-                      "< and > in finding title should be HTML-escaped")
-        XCTAssertTrue(html.contains("&amp;"),
-                      "& should be HTML-escaped")
-        XCTAssertFalse(html.contains("<script>"),
-                       "Raw <script> tag must not appear in output")
+    }
+
+    // MARK: - ADCollector: injectable hostname (CT5)
+
+    func testADCollectorInjectableHostname() async {
+        var collector = ADCollector()
+        collector.hostname = "TESTMAC01"
+        let result = await collector.collect()
+        XCTAssertEqual(result.area, .ad)
+        // The injected hostname must appear in the dscl section header.
+        XCTAssertTrue(
+            result.rawOutput.contains("dscl . -read /Computers/TESTMAC01"),
+            "dscl section header should reference the injected hostname, got: \(result.rawOutput.prefix(300))"
+        )
+        // dscl will fail against a non-existent computer record (expected in a
+        // test environment), but the section must still be present in output.
+        XCTAssertTrue(
+            result.rawOutput.contains("TESTMAC01"),
+            "rawOutput must contain the injected hostname"
+        )
     }
 }

@@ -1,4 +1,8 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
+import os
 
 struct ShellResult {
     let stdout: String
@@ -16,14 +20,13 @@ struct ShellResult {
 
 // MARK: - Thread-safe flag
 
-/// Thread-safe mutable boolean backed by `NSLock`.
+/// Thread-safe mutable boolean backed by `OSAllocatedUnfairLock` (lower overhead than NSLock).
 private final class AtomicBool: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _value: Bool
-    init(_ value: Bool) { _value = value }
+    private let lock = OSAllocatedUnfairLock(initialState: false)
+    init(_ value: Bool) { lock.withLock { $0 = value } }
     var value: Bool {
-        get { lock.withLock { _value } }
-        set { lock.withLock { _value = newValue } }
+        get { lock.withLock { $0 } }
+        set { lock.withLock { $0 = newValue } }
     }
 }
 
@@ -31,13 +34,20 @@ private final class AtomicBool: @unchecked Sendable {
 
 /// Thin async wrapper around `Foundation.Process`.
 enum Shell {
+    // SH1: Suppress SIGPIPE once per process — it is a process-global signal disposition
+    // and calling signal() on every Shell.run() invocation is redundant.
+    private static let _sigpipeIgnored: Void = { signal(SIGPIPE, SIG_IGN) }()
+
     /// Run an executable at `path` with `args`, optionally feeding `stdin` data.
     /// Always returns a result — failures are reported via a non-zero exit code
     /// and a descriptive stderr string rather than throwing.
     ///
-    /// - Parameter timeout: If non-nil, the process is sent SIGTERM after this
-    ///   many seconds (followed by SIGKILL after a 5-second grace period) and
-    ///   the result's stderr will note the timeout.
+    /// - Parameters:
+    ///   - path: Absolute path to the executable. Never interpreted by a shell.
+    ///   - args: Argument vector; each element is passed as-is (no word splitting).
+    ///   - timeout: If non-nil, the process is sent SIGTERM after this many seconds
+    ///     (followed by SIGKILL after a 5-second grace period) and the result's
+    ///     stderr will note the timeout.
     static func run(
         _ path: String,
         args: [String] = [],
@@ -45,6 +55,9 @@ enum Shell {
         timeout: TimeInterval? = nil
     ) async -> ShellResult {
         await withCheckedContinuation { continuation in
+            // Touch the static to ensure SIGPIPE is suppressed before the first process launch.
+            _ = Shell._sigpipeIgnored
+
             let process = Process()
             process.executableURL = URL(fileURLWithPath: path)
             process.arguments     = args
@@ -63,8 +76,8 @@ enum Shell {
                 stdinPipe = pipe
             }
 
-            // Serial queue used to safely accumulate output from concurrent
-            // readabilityHandler callbacks and the terminationHandler.
+            // SH2: ioQueue serialises appends from both stdout and stderr handlers;
+            // removing it would introduce a data race on the output strings.
             let ioQueue = DispatchQueue(label: "com.spacejamf.shell.io")
             var stdoutAccum = Data()
             var stderrAccum = Data()
@@ -108,6 +121,11 @@ enum Shell {
                     process.terminate()
                     // Follow up with SIGKILL after a grace period in case the child
                     // catches or ignores SIGTERM (e.g. a hung kernel transaction) (NEW-2).
+                    // SH3: There is a theoretical PID reuse race between isRunning and kill()
+                    // if the child exits and a new process acquires the same PID in the 5 s
+                    // window. Eliminating it requires an OS-level process handle (not
+                    // available on Darwin without private API). Accepted risk: the window is
+                    // narrow and only affects already-timed-out, unresponsive subprocesses.
                     DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
                         if process.isRunning {
                             kill(process.processIdentifier, SIGKILL)
@@ -171,9 +189,12 @@ enum Shell {
     }
 }
 
-// MARK: - Stderr helper
+// MARK: - Stderr helper (module-wide utility)
 
-/// Write `message` + newline to stderr. Available to all commands.
+/// Writes `message` + newline to stderr.
+/// Intentionally unbuffered — uses write(2) via FileHandle rather than fputs(3)
+/// so progress messages appear immediately even when stdout is redirected.
+/// Not thread-safe — concurrent calls may interleave output lines.
 func err(_ message: String) {
     FileHandle.standardError.write(Data((message + "\n").utf8))
 }

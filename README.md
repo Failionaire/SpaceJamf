@@ -2,7 +2,9 @@
 
 This is a native Swift CLI tool that diagnoses broken or messed up Jamf MDM ↔ Active Directory bindings on macOS, and uses Claude AI to explain root causes and suggest fixes in plain English.
 
-I wrote the original non-AI version of this for myself years ago, but I decided to create a modern version that incorporates AI to help analyze and explain things in human language.
+I wrote the original non-AI version of this for myself years ago, but I decided to create a modern version that incorporates AI to help analyze and explain things in human language, as opposed to manually writing everything myself and slowly losing my mind.
+
+Note: Signed/notarized releases require an Apple Developer account, which I don't have right now. For the time being, build from source or use the unsigned binary (see Roadmap for the full signing plan).
 
 > **Privacy first:** Raw diagnostic output **never leaves your device.** Only scrubbed, redacted output is sent to the Claude API. See [Privacy](#privacy) for details.
 
@@ -67,7 +69,7 @@ brew install spacejamf
 
 ### GitHub Releases (universal binary)
 
-Download the latest pre-built universal binary (`arm64` + `x86_64`) from the [Releases page](../../releases/latest):
+Download the latest pre-built universal binary (`arm64` + `x86_64`) from the [Releases page](../../releases/latest) *(no release published yet — build from source)*:
 
 ```bash
 curl -L https://github.com/Failionaire/SpaceJamf/releases/latest/download/spacejamf.zip -o spacejamf.zip
@@ -77,7 +79,7 @@ sudo mv spacejamf /usr/local/bin/
 
 ### Build from source
 
-Requires Swift 5.7+ (ships with Xcode 14+) and macOS 13+.
+Requires Swift 5.9+ (ships with Xcode 15+) and macOS 13+.
 
 ```bash
 git clone https://github.com/Failionaire/SpaceJamf.git
@@ -91,7 +93,7 @@ sudo cp .build/release/spacejamf /usr/local/bin/
 ## Requirements
 
 - macOS 13 Ventura or later (Man, time sure flies)
-- Swift 5.7+ / Xcode 14+ (build from source only)
+- Swift 5.9+ / Xcode 15+ (build from source only)
 - An [Anthropic API key](https://console.anthropic.com/) — optional; use `--no-claude` to skip AI analysis
 
 ---
@@ -118,7 +120,7 @@ You can also override the default Claude model in the config:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
-CLAUDE_MODEL=claude-sonnet-4-6
+SPACEJAMF_MODEL=claude-sonnet-4-6
 ```
 
 ---
@@ -173,17 +175,21 @@ spacejamf report spacejamf-report-2026-03-16T14-32-00.json --output html
 ### All flags
 
 ```
-USAGE: spacejamf diagnose [--areas <areas>] [--output <format>] [--no-claude] [--dry-run]
+USAGE: spacejamf diagnose [--areas <areas>] [--output-format <format>] [--no-claude] [--dry-run]
+                           [--save-json <path>] [--output-dir <dir>]
 
 OPTIONS:
-  --areas <areas>     Comma-separated list of diagnostic areas to run.
-                      Options: ad, jamf, certs, network, clock
-                      Default: all areas
-  --output <format>   Output format: terminal (default) or html
-  --no-claude         Skip Claude analysis; display raw scrubbed output only
-  --dry-run           Print the scrubbed Claude payload to stdout and exit
-                      without making any API calls
-  -h, --help          Show help information
+  --areas <areas>          Comma-separated list of diagnostic areas to run.
+                           Options: ad, jamf, certs, network, clock
+                           Default: all areas
+  --output-format <format> Output format: terminal (default) or html
+  --no-claude              Skip Claude analysis; display raw scrubbed output only
+  --dry-run                Print the scrubbed Claude payload to stdout and exit
+                           without making any API calls
+  --save-json <path>       Save the analysis report as JSON for later re-rendering
+                           with `spacejamf report`
+  --output-dir <dir>       Directory to write HTML reports into (default: .)
+  -h, --help               Show help information
 ```
 
 ---
@@ -206,6 +212,10 @@ SpaceJamf is designed for use in environments where diagnostic data is sensitive
 Use `--dry-run` to inspect the exact payload before it is ever sent.
 
 Anthropic's [privacy policy](https://www.anthropic.com/privacy) and [usage policy](https://www.anthropic.com/legal/aup) apply to data sent via the API.
+
+### Privacy Limitations
+
+Hostnames, FQDNs, and AD domain names are **intentionally not redacted** — without them, Claude cannot meaningfully diagnose DNS or binding issues. If your hostnames are sensitive, use `--dry-run` to review the exact scrubbed payload before it is sent, and consider whether `--no-claude` is more appropriate for your environment.
 
 ---
 
@@ -232,6 +242,8 @@ PromptBuilder: structure scrubbed output + OS context into Claude prompt
        ▼
 ClaudeClient: POST /v1/messages → [Finding] sorted by severity
        │
+       ├── [--save-json]  → write AnalysisReport JSON to disk (re-render later)
+       │
        ├── TerminalReporter → ANSI output to stdout
        └── HTMLReporter     → self-contained .html file
 ```
@@ -240,14 +252,14 @@ ClaudeClient: POST /v1/messages → [Finding] sorted by severity
 
 ## Roadmap
 
-### USB "Field Kit" Mode *(planned)*
+### USB "Field Kit" *(planned)*
 
 The goal is to make SpaceJamf a self-contained tool that a tech can carry on a USB drive, plug into any troublesome Mac, and run, with no installation or per-machine configuration required.
 
 **What this requires:**
 - **Apple Developer account + notarization** — macOS Gatekeeper will block an unsigned binary from an external drive. The binary needs to be signed with a Developer ID certificate and notarized via `notarytool`. Without this, techs hit a security prompt before the tool ever runs.
 - **APFS or HFS+ formatted USB** — macOS mounts FAT32/exFAT volumes with `noexec`, so the binary simply won't run. The USB must be formatted as APFS.
-- **Encrypted API key storage** — storing a plaintext API key on a USB that can be lost is a billing and security risk. The plan is a `spacejamf setup` command that encrypts the key using AES-256-GCM (via Swift's `CryptoKit`) with a passphrase only the tech knows. Setup writes ciphertext to the USB; every subsequent run prompts for the passphrase to decrypt in memory only — the plaintext key is never written to disk.
+- **Encrypted API key storage** — storing a plaintext API key on a USB that can be lost is a billing and security risk. The plan is a `spacejamf setup` command that encrypts the key using AES-256-GCM (via Swift's `CryptoKit`) with a passphrase only the tech knows. Setup writes ciphertext to the USB; every subsequent run prompts for the passphrase to decrypt in memory only — the plaintext key is never written to disk. The raw passphrase cannot be used directly as an AES-256 key — a key derivation function (PBKDF2 via `CryptoKit` or similar) must be applied to derive the 256-bit encryption key from the passphrase.
 - **Config path resolution** — `Config.swift` needs to check for a config file adjacent to the binary (on the USB) before falling back to `~/.spacejamf/config`.
 
 ---

@@ -1,0 +1,12 @@
+# SYNTHETIC TEST DATA — does not represent any real NTP server or clock state.
+# FX3: Representative ClockCollector output for a Mac with NTP enabled and a
+# clock that is in sync. Used as a fixture baseline for clock output parsing tests.
+=== sntp -t 5 time.apple.com ===
++0.000123 +/- 0.012345 time.apple.com 17.253.68.125
+
+=== systemsetup -getusingnetworktime ===
+Network Time: On
+
+=== System Clock ===
+Epoch:  1741478400
+Local:  Monday, March 10, 2025 at 12:00:00 AM Pacific Standard Time

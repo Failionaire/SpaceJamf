@@ -32,6 +32,12 @@ enum TerminalReporter {
         print("\(bold)Summary\(reset)")
         print("  \(report.summary)\n")
 
+        // TR3: Show when the analysis was generated.
+        if let date = report.generatedAt {
+            let stamp = DateFormatter.localizedString(from: date, dateStyle: .medium, timeStyle: .short)
+            print("  \(dim)Generated: \(stamp)\(reset)\n")
+        }
+
         let sorted = report.findings.sorted { $0.resolvedSeverity > $1.resolvedSeverity }
 
         if sorted.isEmpty {
@@ -56,7 +62,7 @@ enum TerminalReporter {
         print("\(dim)Showing scrubbed diagnostic output. No AI analysis performed.\(reset)\n")
 
         for result in results.values.sorted(by: { $0.area.rawValue < $1.area.rawValue }) {
-            print("\(bold)\(cyan)═══ \(result.area.rawValue.uppercased()) ═══\(reset)")
+            print("\(bold)\(cyan)═══ \(result.area.displayName) ═══\(reset)")
             let exitSummary = result.exitCodes
                 .sorted { $0.key < $1.key }
                 .map { "\($0.key)=\($0.value)" }
@@ -64,7 +70,13 @@ enum TerminalReporter {
             if !exitSummary.isEmpty {
                 print("\(dim)Exit codes: \(exitSummary)\(reset)")
             }
-            print(result.scrubbedOutput ?? "")
+            // TR-1: Trim trailing newlines so each section is separated by exactly
+            // one blank line regardless of how much whitespace the collector appended.
+            let raw = (result.scrubbedOutput ?? "").replacingOccurrences(
+                of: #"\n+$"#, with: "", options: .regularExpression
+            )
+            print(raw)
+            print()
         }
     }
 
@@ -90,9 +102,11 @@ enum TerminalReporter {
     }
 
     private static func printSummaryBox(findings: [Finding]) {
-        let critical = findings.filter { $0.resolvedSeverity == .critical }.count
-        let warnings = findings.filter { $0.resolvedSeverity == .warning  }.count
-        let infos    = findings.filter { $0.resolvedSeverity == .info     }.count
+        // TR2: Single pass instead of three separate filter calls.
+        let counts   = findings.severityCounts()
+        let critical = counts.critical
+        let warnings = counts.warning
+        let infos    = counts.info
 
         let critStr = critical > 0 ? "\(bold)\(red)\(critical) critical\(reset)"   : "\(dim)0 critical\(reset)"
         let warnStr = warnings > 0 ? "\(bold)\(yellow)\(warnings) warning\(reset)" : "\(dim)0 warning\(reset)"
@@ -116,11 +130,19 @@ enum TerminalReporter {
         print()
     }
 
+    // TR-3: Longest badge is "[CRITICAL]" (10 chars). Shorter badges are right-padded
+    // to the same width so finding titles stay left-aligned.
+    private static let badgeWidth = 10
+
     private static func severityBadge(_ severity: Severity) -> String {
+        let color: String
+        let label: String
         switch severity {
-        case .critical: return "\(bold)\(red)[CRITICAL]\(reset)"
-        case .warning:  return "\(bold)\(yellow)[WARNING] \(reset)"
-        case .info:     return "\(bold)\(blue)[INFO]    \(reset)"
+        case .critical: color = red;    label = "[CRITICAL]"
+        case .warning:  color = yellow; label = "[WARNING]"
+        case .info:     color = blue;   label = "[INFO]"
         }
+        let padded = label.padding(toLength: badgeWidth, withPad: " ", startingAt: 0)
+        return "\(bold)\(color)\(padded)\(reset)"
     }
 }

@@ -9,11 +9,12 @@ enum HTMLReporter {
         report: AnalysisReport,
         results: [DiagnosticArea: DiagnosticResult]
     ) -> String {
-        let timestamp = DateFormatter.localizedString(
-            from: report.generatedAt ?? Date(),
-            dateStyle: .long,
-            timeStyle: .long
-        )
+        let timestamp: String
+        if let date = report.generatedAt {
+            timestamp = DateFormatter.localizedString(from: date, dateStyle: .long, timeStyle: .long)
+        } else {
+            timestamp = "Date unavailable"
+        }
 
         let sorted = report.findings.sorted { $0.resolvedSeverity > $1.resolvedSeverity }
         let findingsHTML = sorted.enumerated()
@@ -30,9 +31,10 @@ enum HTMLReporter {
                 .joined(separator: "\n")
         }
 
-        let critical = sorted.filter { $0.resolvedSeverity == .critical }.count
-        let warnings = sorted.filter { $0.resolvedSeverity == .warning  }.count
-        let infos    = sorted.filter { $0.resolvedSeverity == .info     }.count
+        let counts = sorted.severityCounts()
+        let critical = counts.critical
+        let warnings = counts.warning
+        let infos    = counts.info
 
         return """
         <!DOCTYPE html>
@@ -40,6 +42,8 @@ enum HTMLReporter {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <meta http-equiv="Content-Security-Policy"
+                  content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
             <title>SpaceJamf Report — \(esc(timestamp))</title>
             <style>\(css)</style>
             <noscript><style>.finding-header{cursor:default;}</style></noscript>
@@ -100,9 +104,9 @@ enum HTMLReporter {
                  aria-expanded="true" aria-controls="finding-\(index)"
                  onclick="toggleFinding(this)"
                  onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleFinding(this);}">
-                <span class="badge \(badgeClass)">\(finding.severity.rawValue.uppercased())</span>
+                <span class="badge \(badgeClass)">\(esc(finding.resolvedSeverity.rawValue.uppercased()))</span>
                 <span class="area-label">\(esc(finding.area.uppercased()))</span>
-                <span class="badge \(confClass)">\(confLabel)</span>
+                <span class="badge \(confClass)">\(esc(confLabel))</span>
                 <span class="finding-title">\(index). \(esc(finding.title))</span>
             </div>
             <div class="finding-body" id="finding-\(index)">
@@ -304,7 +308,8 @@ enum HTMLReporter {
         line-height: 1.55;
         overflow-x: auto;
         white-space: pre-wrap;
-        word-break: break-all;
+        overflow-wrap: break-word;
+        word-break: break-word;
         font-family: 'SF Mono', Menlo, Consolas, monospace;
         color: var(--muted);
     }
@@ -325,9 +330,9 @@ enum HTMLReporter {
 
     private static let javascript = """
     function toggleFinding(header){
-        var body=header.nextElementSibling;
+        const body=header.nextElementSibling;
         if(!body)return;
-        var hidden=body.style.display==='none';
+        const hidden=body.style.display==='none';
         body.style.display=hidden?'':'none';
         header.setAttribute('aria-expanded',String(hidden));
     }

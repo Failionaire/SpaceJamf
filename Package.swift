@@ -15,13 +15,20 @@ let package = Package(
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
             ],
-            path: "Sources/SpaceJamf"
+            path: "Sources/SpaceJamf",
+            // PK-2: Enable strict concurrency checking so the compiler enforces
+            // Sendable conformance and actor isolation at compile time (Swift 5.9).
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
         ),
         .testTarget(
             name: "SpaceJamfTests",
             dependencies: ["SpaceJamf"],
             path: "Tests/SpaceJamfTests",
             resources: [
+                // PK-3: .copy preserves the Fixtures directory structure verbatim
+                // inside the test bundle (Bundle.module.url accesses it at runtime).
                 .copy("Fixtures")
             ]
         )

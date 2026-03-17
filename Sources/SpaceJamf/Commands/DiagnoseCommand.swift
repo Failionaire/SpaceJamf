@@ -19,7 +19,7 @@ struct DiagnoseCommand: AsyncParsableCommand {
         name: .long,
         help: "Output format: terminal (default) or html"
     )
-    var outputFormat: String = "terminal"
+    var outputFormat: OutputFormat = .terminal
 
     @Flag(
         name: .long,
@@ -54,11 +54,6 @@ struct DiagnoseCommand: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        guard outputFormat == "terminal" || outputFormat == "html" else {
-            err("Unknown output format '\(outputFormat)'. Valid values: terminal, html")
-            throw ExitCode.failure
-        }
-
         let collectors = buildCollectors(for: selectedAreas)
         preflightElevationCheck(collectors: collectors)
 
@@ -78,9 +73,7 @@ struct DiagnoseCommand: AsyncParsableCommand {
         // ── Scrub ──────────────────────────────────────────────────────────────
         var results: [DiagnosticArea: DiagnosticResult] = [:]
         for (area, result) in rawResults {
-            var scrubbed = result
-            scrubbed.scrubbedOutput = Scrubber.scrub(result.rawOutput)
-            results[area] = scrubbed
+            results[area] = result.withScrubbedOutput(Scrubber.scrub(result.rawOutput))
         }
 
         // ── Dry run ────────────────────────────────────────────────────────────
@@ -91,22 +84,14 @@ struct DiagnoseCommand: AsyncParsableCommand {
 
         // ── No-Claude mode ────────────────────────────────────────────────────
         if noClaude {
-            if outputFormat == "html" {
-                // Produce an HTML report with no AI findings (NEW-10).
+            if outputFormat == .html {
                 let rawReport = AnalysisReport(
                     findings: [],
                     summary: "Raw diagnostic output only — AI analysis not performed (--no-claude).",
                     generatedAt: Date()
                 )
-                let filename = htmlFilename()
-                let html = HTMLReporter.render(report: rawReport, results: results)
-                do {
-                    try html.write(toFile: filename, atomically: true, encoding: .utf8)
-                    print("Report written to \(URL(fileURLWithPath: filename).absoluteURL.path)")
-                } catch {
-                    err("Failed to write HTML report: \(error)")
-                    throw ExitCode.failure
-                }
+                let filename = ReportWriter.makeHTMLFilename(in: outputDir)
+                try writeHTMLOrExit(HTMLReporter.render(report: rawReport, results: results), to: filename, outputDir: outputDir)
             } else {
                 TerminalReporter.renderRaw(results: results)
             }
@@ -123,28 +108,29 @@ struct DiagnoseCommand: AsyncParsableCommand {
         }
 
         // ── Build prompt + call Claude ────────────────────────────────────────
-        err("Analyzing with Claude \(Config.model())…")
-        let prompt = await PromptBuilder.build(from: Array(results.values))
+        // Capture model once so the log message and API call always use the same value.
+        let model = Config.model()
+        err("Analyzing with Claude \(model)…")
+        guard let prompt = await PromptBuilder.build(from: Array(results.values)) else {
+            err("No diagnostic results to analyze.")
+            throw ExitCode.failure
+        }
         var report: AnalysisReport
         do {
             report = try await ClaudeClient.analyze(
                 prompt: prompt,
                 apiKey: apiKey,
-                model:  Config.model()
+                model:  model
             )
         } catch {
             err("Claude analysis failed: \(error)")
             throw ExitCode.failure
         }
-        // Note: report.generatedAt is set inside ClaudeClient.analyze(); no re-assignment needed.
 
         // ── Optionally persist JSON ───────────────────────────────────────────
         if let savePath = saveJSON {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting    = .prettyPrinted
-            encoder.dateEncodingStrategy = .iso8601
             do {
-                let data = try encoder.encode(report)
+                let data = try AnalysisReport.encoder.encode(report)
                 try data.write(to: URL(fileURLWithPath: savePath))
                 err("Report JSON saved to \(savePath)")
             } catch {
@@ -154,41 +140,38 @@ struct DiagnoseCommand: AsyncParsableCommand {
 
         // ── Render ────────────────────────────────────────────────────────────
         switch outputFormat {
-        case "html":
-            let filename = htmlFilename()
-            let html = HTMLReporter.render(report: report, results: results)
-            do {
-                try html.write(toFile: filename, atomically: true, encoding: .utf8)
-                print("Report written to \(URL(fileURLWithPath: filename).absoluteURL.path)")
-            } catch {
-                err("Failed to write HTML report: \(error)")
-                throw ExitCode.failure
-            }
-        default:
+        case .html:
+            let filename = ReportWriter.makeHTMLFilename(in: outputDir)
+            try writeHTMLOrExit(HTMLReporter.render(report: report, results: results), to: filename, outputDir: outputDir)
+        case .terminal:
             TerminalReporter.render(report: report, results: results)
+        }
+    }
+
+    // RF3: Centralised HTML write helper — prints exactly one error line on failure.
+    private func writeHTMLOrExit(_ html: String, to filename: String, outputDir: String) throws {
+        do {
+            try ReportWriter.writeHTMLReport(html, to: filename, outputDir: outputDir)
+        } catch {
+            err("\(error)")
+            throw ExitCode.failure
         }
     }
 
     // MARK: - Helpers
 
+    // Internal to allow unit tests to call it directly.
     func parseAreas() -> [DiagnosticArea] {
         let tokens = areas
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-        // Warn about unrecognised tokens (L-8).
         for token in tokens where DiagnosticArea(rawValue: token) == nil {
             err("Warning: unknown area '\(token)' — skipped")
         }
-        // Parse, then deduplicate while preserving order (NEW-11).
         var seen = Set<DiagnosticArea>()
         return tokens
             .compactMap { DiagnosticArea(rawValue: $0) }
             .filter { seen.insert($0).inserted }
-    }
-
-    private func htmlFilename() -> String {
-        let name = "spacejamf-report-\(String(UUID().uuidString.prefix(8)).lowercased()).html"
-        return URL(fileURLWithPath: outputDir).appendingPathComponent(name).path
     }
 
     private func buildCollectors(
@@ -210,8 +193,6 @@ struct DiagnoseCommand: AsyncParsableCommand {
     ) {
         let needsElevation = collectors.filter { $0.requiresElevation }
         guard !needsElevation.isEmpty else { return }
-
-        // geteuid() == 0 means running as root / via sudo
         guard geteuid() != 0 else { return }
 
         err("⚠️  Warning: the following collectors require root for complete output:")
@@ -222,6 +203,8 @@ struct DiagnoseCommand: AsyncParsableCommand {
     }
 
     private func printDryRunPayload(results: [DiagnosticArea: DiagnosticResult]) {
+        // Intentionally stdout: dry-run output is the primary deliverable, so it
+        // should be pipeable/redirectable independently of progress messages (stderr).
         print("""
         ╔══════════════════════════════════════════╗
         ║  DRY RUN — Scrubbed Claude payload       ║
@@ -229,10 +212,9 @@ struct DiagnoseCommand: AsyncParsableCommand {
         ╚══════════════════════════════════════════╝
         """)
         for result in results.values.sorted(by: { $0.area.rawValue < $1.area.rawValue }) {
-            print("━━━ \(result.area.rawValue.uppercased()) ━━━")
+            print("━━━ \(result.area.displayName) ━━━")
             print(result.scrubbedOutput ?? "")
         }
     }
 }
-
 

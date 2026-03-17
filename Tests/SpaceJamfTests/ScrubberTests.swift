@@ -150,4 +150,60 @@ final class ScrubberTests: XCTestCase {
                        "IPv6 loopback ::1 should be redacted")
         XCTAssertTrue(output.contains("[IP_REDACTED]"))
     }
+
+    // MARK: - SC-1: password line with = and : separators (TS-1)
+
+    // SC-1: The tightened regex uses [=:] only; space-only separators are
+    // intentionally not matched to avoid over-redacting policy description lines.
+    func testScrubsPasswordWithColonSeparator() {
+        let output = Scrubber.scrub("password: SuperSecret456")
+        XCTAssertFalse(output.contains("SuperSecret456"),
+                       "password: form should be redacted")
+        XCTAssertTrue(output.contains("[CREDENTIAL_REDACTED]"))
+    }
+
+    func testDoesNotScrubSpaceSeparatedPasswordLine() {
+        // Space-only separators are no longer matched by the tightened pattern.
+        // This is an accepted trade-off to avoid redacting policy description lines
+        // such as "Password Policy:" where the value is a label, not a credential.
+        let output = Scrubber.scrub("password SuperSecret456")
+        // The line should remain unchanged (no = or : separator).
+        XCTAssertTrue(output.contains("password SuperSecret456"),
+                      "Space-separated form is intentionally not redacted by the tightened SC-1 pattern")
+    }
+
+    // MARK: - SC-1 false-positive guard (TS-5)
+
+    func testDoesNotScrubCppScopeOperator() {
+        // "std::string" contains "::" resembling a compressed IPv6 fragment but
+        // must NOT be redacted because it lacks the required `::` pattern with
+        // surrounding hex groups.
+        let input  = "type: std::string value: hello"
+        let output = Scrubber.scrub(input)
+        XCTAssertTrue(output.contains("std::string"),
+                      "C++ scope operator should not be treated as IPv6")
+    }
+
+    // MARK: - SC-2: MAC address scrubbing
+
+    func testScrubsMACAddressColonNotation() {
+        let output = Scrubber.scrub("Hardware: aa:bb:cc:dd:ee:ff")
+        XCTAssertFalse(output.contains("aa:bb:cc:dd:ee:ff"),
+                       "MAC address in colon notation should be redacted")
+        XCTAssertTrue(output.contains("[MAC REDACTED]"))
+    }
+
+    func testScrubsMACAddressHyphenNotation() {
+        let output = Scrubber.scrub("MAC: AA-BB-CC-DD-EE-FF")
+        XCTAssertFalse(output.contains("AA-BB-CC-DD-EE-FF"),
+                       "MAC address in hyphen notation should be redacted")
+        XCTAssertTrue(output.contains("[MAC REDACTED]"))
+    }
+
+    func testScrubsMACAddressCaseInsensitive() {
+        let output = Scrubber.scrub("en0: 0A:1B:2C:3D:4E:5F")
+        XCTAssertFalse(output.contains("0A:1B:2C:3D:4E:5F"),
+                       "Mixed-case MAC address should be redacted")
+        XCTAssertTrue(output.contains("[MAC REDACTED]"))
+    }
 }

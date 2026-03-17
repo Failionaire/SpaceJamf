@@ -14,7 +14,7 @@ struct ReportCommand: AsyncParsableCommand {
         name: .long,
         help: "Output format: terminal (default) or html"
     )
-    var outputFormat: String = "terminal"
+    var outputFormat: OutputFormat = .terminal
 
     @Option(
         name: .long,
@@ -23,16 +23,7 @@ struct ReportCommand: AsyncParsableCommand {
     var outputDir: String = "."
 
     mutating func run() async throws {
-        guard outputFormat == "terminal" || outputFormat == "html" else {
-            err("Error: unknown output format '\(outputFormat)'. Valid values: terminal, html")
-            throw ExitCode.failure
-        }
-
-        guard FileManager.default.fileExists(atPath: jsonPath) else {
-            err("Error: file not found: \(jsonPath)")
-            throw ExitCode.failure
-        }
-
+        // RC-2: Skip TOCTOU fileExists pre-check; let Data(contentsOf:) report the error directly.
         let data: Data
         do {
             data = try Data(contentsOf: URL(fileURLWithPath: jsonPath))
@@ -41,35 +32,31 @@ struct ReportCommand: AsyncParsableCommand {
             throw ExitCode.failure
         }
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-
-        var report: AnalysisReport
+        let report: AnalysisReport
         do {
-            report = try decoder.decode(AnalysisReport.self, from: data)
+            report = try AnalysisReport.decoder.decode(AnalysisReport.self, from: data)
         } catch {
-            err("Error decoding report: \(error)")
+            // R2: Lead with a user-friendly summary; technical detail follows on the next line.
+            err("Could not read report file \u2014 the JSON may be from an older version of SpaceJamf.")
+            err("  Details: \(error)")
             throw ExitCode.failure
         }
-
-        if report.generatedAt == nil {
-            report.generatedAt = Date()
-        }
+        // RC-1: Do not fabricate a timestamp. generatedAt was stamped in ClaudeClient at
+        // analysis time and is persisted in the JSON. If missing, the reporter uses a
+        // "Date unavailable" fallback string rather than silently substituting now().
 
         switch outputFormat {
-        case "html":
-            let name = "spacejamf-report-\(String(UUID().uuidString.prefix(8)).lowercased()).html"
-            let filename = URL(fileURLWithPath: outputDir).appendingPathComponent(name).path
-            // Pass empty results — raw output is not stored in the JSON report
+        case .html:
+            let filename = ReportWriter.makeHTMLFilename(in: outputDir)
+            // Pass empty results — raw output is not stored in the JSON report.
             let html = HTMLReporter.render(report: report, results: [:])
             do {
-                try html.write(toFile: filename, atomically: true, encoding: .utf8)
-                print("Report written to \(URL(fileURLWithPath: filename).absoluteURL.path)")
+                try ReportWriter.writeHTMLReport(html, to: filename, outputDir: outputDir)
             } catch {
-                err("Failed to write HTML: \(error)")
+                err("\(error)")
                 throw ExitCode.failure
             }
-        default:
+        case .terminal:
             TerminalReporter.render(report: report, results: [:])
         }
     }
